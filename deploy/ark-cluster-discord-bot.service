@@ -1,0 +1,19 @@
+[Unit]
+Description=ARK Cluster Discord Bot
+After=network-online.target ark-cluster-manager.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=arkbot
+Group=arkbot
+WorkingDirectory=/opt/ark-cluster-discord-bot
+EnvironmentFile=/etc/ark-cluster-discord-bot/bot.env
+ExecStart=/usr/bin/node /opt/ark-cluster-discord-bot/dist/index.js
+Restart=on-failure
+RestartSec=10
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
