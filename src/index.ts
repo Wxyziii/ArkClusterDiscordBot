@@ -1,6 +1,7 @@
 import { Client, Events, GatewayIntentBits } from "discord.js";
 import { handlers } from "./commands.js";
 import { loadConfig } from "./config.js";
+import { startDashboard } from "./dashboard.js";
 import { ManagerClient } from "./manager.js";
 
 const config = loadConfig();
@@ -12,6 +13,7 @@ client.once(Events.ClientReady, async (readyClient) => {
   try {
     await manager.get("/health");
     console.log("Manager API reachable");
+    await startDashboard(readyClient, manager, config);
   } catch (err) {
     console.error(`Manager API check failed: ${safeMessage(err)}`);
   }

@@ -1,13 +1,17 @@
 import {
   ChatInputCommandInteraction,
+  Colors,
+  EmbedBuilder,
   GuildMember,
   RESTPostAPIChatInputApplicationCommandsJSONBody,
   SlashCommandBuilder
 } from "discord.js";
+import type { ColorResolvable } from "discord.js";
 import type { BotConfig } from "./config.js";
-import { compact, ManagerClient } from "./manager.js";
+import { compact, ManagerClient, ManagerError } from "./manager.js";
 
 type Handler = (interaction: ChatInputCommandInteraction, manager: ManagerClient, config: BotConfig) => Promise<void>;
+type Row = Record<string, any>;
 
 export const commandData: RESTPostAPIChatInputApplicationCommandsJSONBody[] = [
   new SlashCommandBuilder().setName("status").setDescription("Show cluster status"),
@@ -68,22 +72,36 @@ export const commandData: RESTPostAPIChatInputApplicationCommandsJSONBody[] = [
   new SlashCommandBuilder()
     .setName("update")
     .setDescription("Admin: maintenance")
-    .addSubcommand((s) => s.setName("ark").setDescription("Dry-run ARK update workflow"))
+    .addSubcommand((s) => s.setName("ark").setDescription("Dry-run ARK update workflow")),
+  new SlashCommandBuilder()
+    .setName("debug")
+    .setDescription("Admin: raw manager response")
+    .addSubcommand((s) =>
+      s
+        .setName("raw")
+        .setDescription("Fetch raw endpoint")
+        .addStringOption((o) => o.setName("endpoint").setDescription("/api/status, /api/servers, /health, ...").setRequired(true))
+    )
 ].map((c) => c.toJSON());
 
 export const handlers: Record<string, Handler> = {
-  status: read("/api/status"),
-  maps: read("/api/servers"),
-  players: read("/api/players"),
-  resources: read("/api/resources"),
-  backups: read("/api/backups"),
-  runtime: read("/api/runtime"),
-  help: async (i) => {
-    await i.reply("Commands: /status /maps /players /travel /resources /backups /runtime /config /mods /update plus admin /start /stop /restart /backup /home.");
-  },
+  status: async (i, m) => replyEmbed(i, statusEmbed(await m.get<Row>("/api/status"))),
+  maps: async (i, m) => replyEmbed(i, mapsEmbed(await m.get<Row[]>("/api/servers"))),
+  players: async (i, m) => replyEmbed(i, playersEmbed(await m.get<Row>("/api/players"))),
+  resources: async (i, m) => replyEmbed(i, resourcesEmbed(await m.get<Row>("/api/resources"))),
+  backups: async (i, m) => replyEmbed(i, backupsEmbed(await m.get<Row>("/api/backups"))),
+  runtime: async (i, m) => replyEmbed(i, runtimeEmbed(await m.get<Row>("/api/runtime"))),
+  help: async (i) => replyEmbed(i, helpEmbed()),
   travel: async (i, m) => {
     const map = i.options.getString("map", true);
-    await replyJson(i, await m.post("/api/travel/request", { map, source: "discord", actor: i.user.tag }));
+    let value: unknown;
+    try {
+      value = await m.post("/api/travel/request", { map, source: "discord", actor: i.user.tag });
+    } catch (err) {
+      if (!(err instanceof ManagerError) || !err.payload) throw err;
+      value = err.payload;
+    }
+    await replyEmbed(i, travelEmbed(asRow(value)));
   },
   start: guardedAction("start"),
   stop: guardedAction("stop"),
@@ -93,53 +111,190 @@ export const handlers: Record<string, Handler> = {
     requireAdmin(i, c);
     const sub = i.options.getSubcommand();
     const path = sub === "start" ? "/api/servers/home/actions/start" : "/api/servers/home/actions/stop";
-    await replyJson(i, await m.post(path, { confirm: true, strongConfirm: true, reason: sub === "start" ? "discord_home_start" : "manual_admin_override" }));
+    const value = await m.post<Row>(path, { confirm: true, strongConfirm: true, reason: sub === "start" ? "discord_home_start" : "manual_admin_override" });
+    await replyEmbed(i, actionEmbed(value, `Home ${sub}`));
   },
   config: async (i, m, c) => {
     requireAdmin(i, c);
     const sub = i.options.getSubcommand();
-    if (sub === "get") return replyJson(i, await m.get("/api/config"));
-    await replyJson(
-      i,
-      await m.post("/api/config/set", {
-        file: i.options.getString("file", true),
-        key: i.options.getString("key", true),
-        value: i.options.getString("value", true),
-        confirm: true,
-        reason: "discord_config_set"
-      })
-    );
+    if (sub === "get") {
+      await replyEmbed(i, configEmbed(await m.get<Row>("/api/config"), i.options.getString("key")));
+      return;
+    }
+    const value = await m.post<Row>("/api/config/set", {
+      file: i.options.getString("file", true),
+      key: i.options.getString("key", true),
+      value: i.options.getString("value", true),
+      confirm: true,
+      reason: "discord_config_set"
+    });
+    await replyEmbed(i, actionEmbed(value, "Config update"));
   },
   mods: async (i, m, c) => {
     requireAdmin(i, c);
     const sub = i.options.getSubcommand();
-    if (sub === "list" || sub === "reorder") return replyJson(i, await m.get("/api/mods"));
-    await replyJson(i, await m.post(`/api/mods/${sub}`, { workshopId: i.options.getString("workshop_id", true), confirm: true }));
+    if (sub === "list" || sub === "reorder") {
+      await replyEmbed(i, modsEmbed(await m.get<Row>("/api/mods")));
+      return;
+    }
+    const value = await m.post<Row>(`/api/mods/${sub}`, { workshopId: i.options.getString("workshop_id", true), confirm: true });
+    await replyEmbed(i, actionEmbed(value, `Mod ${sub}`));
   },
   update: async (i, m, c) => {
     requireAdmin(i, c);
-    await replyJson(i, await m.post("/api/maintenance/update/ark", { dryRun: true, reason: "discord_update_dry_run" }));
+    await replyEmbed(i, maintenanceEmbed(await m.post<Row>("/api/maintenance/update/ark", { dryRun: true, reason: "discord_update_dry_run" })));
+  },
+  debug: async (i, m, c) => {
+    requireAdmin(i, c);
+    const endpoint = i.options.getString("endpoint", true).trim();
+    if (!endpoint.startsWith("/api/") && endpoint !== "/health") throw new Error("endpoint must start with /api/ or be /health");
+    await i.reply({ content: `\`\`\`json\n${compact(await m.get(endpoint), 1800)}\n\`\`\``, ephemeral: true });
   }
 };
-
-function read(path: string): Handler {
-  return async (i, m) => replyJson(i, await m.get(path));
-}
 
 function guardedAction(action: string): Handler {
   return async (i, m, c) => {
     requireAdmin(i, c);
     const slot = i.options.getString("slot", true);
-    await replyJson(i, await m.post(`/api/servers/${slot}/actions/${action}`, { confirm: true, strongConfirm: action !== "start", reason: `discord_${action}` }));
+    const value = await m.post<Row>(`/api/servers/${slot}/actions/${action}`, { confirm: true, strongConfirm: action !== "start", reason: `discord_${action}` });
+    await replyEmbed(i, actionEmbed(value, `${slot} ${action}`));
   };
 }
 
-async function replyJson(i: ChatInputCommandInteraction, value: unknown): Promise<void> {
-  await i.reply({ content: `\`\`\`json\n${compact(value)}\n\`\`\``, ephemeral: true });
+async function replyEmbed(i: ChatInputCommandInteraction, embed: EmbedBuilder, ephemeral = true): Promise<void> {
+  await i.reply({ embeds: [embed], ephemeral });
+}
+
+function baseEmbed(title: string, color: ColorResolvable = Colors.Blurple): EmbedBuilder {
+  return new EmbedBuilder().setTitle(title).setColor(color).setTimestamp(new Date());
+}
+
+function statusEmbed(status: Row): EmbedBuilder {
+  const cluster = asRow(status.cluster);
+  const pressure = asRow(status.resourcePressure);
+  return baseEmbed(`ARK Cluster · ${text(cluster.name, "Status")}`, Colors.Green)
+    .setDescription(`Manager ${text(asRow(status.manager).status)} · Discord ${text(asRow(status.discord).status)} · Tailscale ${text(asRow(status.tailscale).status)}`)
+    .addFields(
+      { name: "Players", value: String(status.players ?? 0), inline: true },
+      { name: "Running maps", value: String(status.runningMaps ?? 0), inline: true },
+      { name: "RAM", value: `${text(pressure.label)} (${status.resourcePressure?.ramPct ?? "?"}%)`, inline: true },
+      { name: "Travel policy", value: `${cluster.maxTravelServers ?? "?"} max · empty shutdown ${cluster.emptyShutdownMins ?? "?"} min`, inline: false }
+    );
+}
+
+function mapsEmbed(maps: Row[]): EmbedBuilder {
+  const lines = maps.slice(0, 12).map((m) => `**${text(m.name)}** · ${text(m.assignment)} · ${text(m.state)} · ${m.players ?? 0}/${m.maxPlayers ?? "?"}`);
+  return baseEmbed("ARK Maps", Colors.Green).setDescription(lines.length ? lines.join("\n") : "No maps returned.");
+}
+
+function playersEmbed(value: Row): EmbedBuilder {
+  const players = asRows(value.players);
+  const lines = players.slice(0, 15).map((p) => `**${text(p.name)}** · ${text(p.map)} · lvl ${p.level ?? "?"} · ${p.connectedMins ?? 0}m`);
+  return baseEmbed("ARK Players", players.length ? Colors.Green : Colors.Grey).setDescription(lines.length ? lines.join("\n") : `No players online. Source: ${text(value.source)}`);
+}
+
+function resourcesEmbed(value: Row): EmbedBuilder {
+  const sample = asRow(value.sample);
+  const derived = asRow(value.derived);
+  const load = asRow(value.loadAverage);
+  return baseEmbed("Host Resources", Colors.Blurple).addFields(
+    { name: "RAM", value: `${derived.ramPct ?? "?"}% · ${sample.ramAvailableGb ?? "?"} GB free`, inline: true },
+    { name: "CPU", value: `${derived.cpuPct ?? sample.cpuPct ?? "?"}%`, inline: true },
+    { name: "Disk", value: `${derived.diskPct ?? "?"}% · ${sample.diskFreeGb ?? "?"} GB free`, inline: true },
+    { name: "Load", value: `${load.one ?? sample.load1 ?? "?"} / ${load.five ?? sample.load5 ?? "?"} / ${load.fifteen ?? sample.load15 ?? "?"}`, inline: false }
+  );
+}
+
+function backupsEmbed(value: Row): EmbedBuilder {
+  const backups = asRows(value.backups);
+  const lines = backups.slice(0, 10).map((b) => `**${text(b.map)}** · ${text(b.type)} · ${text(b.status)} · ${text(b.createdAt ?? b.created)}`);
+  return baseEmbed("Backups", Colors.Green).setDescription(lines.length ? lines.join("\n") : "No backups returned.");
+}
+
+function runtimeEmbed(value: Row): EmbedBuilder {
+  return baseEmbed("Runtime Readiness", value.ready ? Colors.Green : Colors.Orange).addFields(
+    runtimeField("SteamCMD", value.steamcmd),
+    runtimeField("ARK server", value.arkServer),
+    runtimeField("Shared config", value.sharedConfig),
+    runtimeField("Cluster dir", value.clusterDir),
+    runtimeField("Backup root", value.backupRoot)
+  );
+}
+
+function runtimeField(name: string, value: unknown) {
+  const row = asRow(value);
+  return { name, value: `${row.ok ? "ok" : "check"} · ${text(row.path ?? row.message)}`, inline: false };
+}
+
+function travelEmbed(value: Row): EmbedBuilder {
+  return baseEmbed(`Travel · ${text(value.requestedMap, "request")}`, value.accepted ? Colors.Green : Colors.Orange)
+    .setDescription(text(value.reason, "No reason returned."))
+    .addFields(
+      { name: "Status", value: text(value.status), inline: true },
+      { name: "Resolved map", value: text(value.resolvedMap, "none"), inline: true },
+      { name: "Chosen slot", value: text(value.chosenSlot, "none"), inline: true }
+    );
+}
+
+function configEmbed(value: Row, key: string | null): EmbedBuilder {
+  const shared = asRow(value.shared);
+  const game = text(value.gameIni);
+  const gus = text(value.gameUserSettingsIni);
+  const lines = key ? [...game.split("\n"), ...gus.split("\n")].filter((line) => line.toLowerCase().startsWith(`${key.toLowerCase()}=`)) : [];
+  const desc = key ? (lines.length ? lines.join("\n") : `No masked value found for ${key}.`) : `Shared config: ${text(shared.sharedConfigDir)}`;
+  return baseEmbed("Shared Config", Colors.Blurple).setDescription(trunc(desc, 1800));
+}
+
+function modsEmbed(value: Row): EmbedBuilder {
+  const mods = asRows(value.mods);
+  const lines = mods.slice(0, 12).map((m) => `**${text(m.name, `Workshop ${m.workshopId}`)}** · ${m.workshopId} · ${m.enabled ? "enabled" : "disabled"} · ${text(m.status)}`);
+  return baseEmbed("Mods", value.mutable ? Colors.Green : Colors.Grey)
+    .setDescription(lines.length ? lines.join("\n") : "No mod records yet.")
+    .addFields({ name: "Mutations", value: value.mutable ? "enabled" : "disabled by manager", inline: true });
+}
+
+function maintenanceEmbed(value: Row): EmbedBuilder {
+  return baseEmbed("ARK Update Dry-run", Colors.Orange)
+    .setDescription(text(value.detail, "Dry-run returned."))
+    .addFields({ name: "Job", value: text(value.jobId), inline: true }, { name: "Status", value: text(value.status), inline: true });
+}
+
+function actionEmbed(value: Row, title: string): EmbedBuilder {
+  return baseEmbed(title, value.accepted === false ? Colors.Orange : Colors.Green)
+    .setDescription(text(value.message ?? value.result ?? value.detail ?? "Action returned."))
+    .addFields({ name: "Result", value: text(value.result ?? value.status ?? value.action ?? "ok"), inline: true });
+}
+
+function helpEmbed(): EmbedBuilder {
+  return baseEmbed("ARK Bot Commands", Colors.Blurple).setDescription(
+    [
+      "`/status` `/maps` `/players` `/travel` `/resources` `/backups` `/runtime`",
+      "Admin: `/start` `/stop` `/restart` `/backup` `/home` `/config` `/mods` `/update` `/debug raw`"
+    ].join("\n")
+  );
 }
 
 function requireAdmin(i: ChatInputCommandInteraction, config: BotConfig): void {
   if (!config.adminRoleId) return;
-  const member = i.member as GuildMember | null;
-  if (!member?.roles.cache.has(config.adminRoleId)) throw new Error("admin role required");
+  const member = i.member as GuildMember | { roles?: string[] } | null;
+  if (member instanceof GuildMember && member.roles.cache.has(config.adminRoleId)) return;
+  if (Array.isArray(member?.roles) && member.roles.includes(config.adminRoleId)) return;
+  throw new Error("admin role required");
+}
+
+function asRow(value: unknown): Row {
+  return value && typeof value === "object" ? (value as Row) : {};
+}
+
+function asRows(value: unknown): Row[] {
+  return Array.isArray(value) ? value.map(asRow) : [];
+}
+
+function text(value: unknown, fallback = "unknown"): string {
+  if (value === null || value === undefined || value === "") return fallback;
+  return String(value);
+}
+
+function trunc(value: string, max: number): string {
+  return value.length > max ? `${value.slice(0, max - 20)}\n...truncated` : value;
 }

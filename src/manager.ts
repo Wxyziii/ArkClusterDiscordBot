@@ -3,15 +3,15 @@ import type { BotConfig } from "./config.js";
 export class ManagerClient {
   constructor(private readonly config: BotConfig) {}
 
-  async get(path: string): Promise<unknown> {
+  async get<T = unknown>(path: string): Promise<T> {
     return this.request("GET", path);
   }
 
-  async post(path: string, body: unknown): Promise<unknown> {
+  async post<T = unknown>(path: string, body: unknown): Promise<T> {
     return this.request("POST", path, body);
   }
 
-  private async request(method: string, path: string, body?: unknown): Promise<unknown> {
+  private async request<T>(method: string, path: string, body?: unknown): Promise<T> {
     const res = await fetch(`${this.config.managerApiBase}${path}`, {
       method,
       headers: {
@@ -23,10 +23,24 @@ export class ManagerClient {
     const text = await res.text();
     const parsed = text ? safeJson(text) : {};
     if (!res.ok) {
-      const err = parsed as { error?: { code?: string; message?: string } };
-      throw new Error(`${err.error?.code ?? res.status}: ${err.error?.message ?? text}`);
+      const err = parsed as { error?: { code?: string; message?: string }; reason?: string; message?: string; status?: string };
+      const code = err.error?.code ?? err.status ?? String(res.status);
+      const message = err.error?.message ?? err.reason ?? err.message ?? text;
+      throw new ManagerError(res.status, code, message, parsed);
     }
-    return parsed;
+    return parsed as T;
+  }
+}
+
+export class ManagerError extends Error {
+  constructor(
+    public readonly status: number,
+    public readonly code: string,
+    message: string,
+    public readonly payload: unknown
+  ) {
+    super(`${code}: ${message}`);
+    this.name = "ManagerError";
   }
 }
 
