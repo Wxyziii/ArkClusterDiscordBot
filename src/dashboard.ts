@@ -143,7 +143,7 @@ function statusPanel(status: Row): EmbedBuilder {
     .setColor(Colors.Green)
     .setDescription(`Manager ${text(asRow(status.manager).status)} · Discord ${text(asRow(status.discord).status)} · Tailscale ${text(asRow(status.tailscale).status)}`)
     .addFields(
-      { name: "Players", value: String(status.players ?? 0), inline: true },
+      { name: "Players", value: playerTotal(status), inline: true },
       { name: "Running maps", value: String(status.runningMaps ?? 0), inline: true },
       { name: "RAM pressure", value: `${text(pressure.label)} (${pressure.ramPct ?? "?"}%)`, inline: true }
     )
@@ -151,15 +151,16 @@ function statusPanel(status: Row): EmbedBuilder {
 }
 
 function travelPanel(travel: Row): EmbedBuilder {
-  const slots = asRow(travel.slots);
+  const slots = asRows(travel.slots);
+  const slotFields = slots.length
+    ? slots.map(slotStateField)
+    : [{ name: "Slots", value: "No slot state returned.", inline: false }];
   return new EmbedBuilder()
     .setTitle("ARK Travel")
     .setColor(travel.enabled ? Colors.Green : Colors.Grey)
     .setDescription(text(travel.blockReason, "Travel scheduler ready."))
     .addFields(
-      slotField("Home", slots.home),
-      slotField("Travel A", slots.travelA),
-      slotField("Travel B", slots.travelB),
+      ...slotFields,
       { name: "Idle shutdown", value: `${Math.round(Number(travel.idleShutdownSecs ?? 0) / 60)} min`, inline: true }
     )
     .setTimestamp(new Date());
@@ -170,7 +171,7 @@ function playersPanel(value: Row): EmbedBuilder {
   return new EmbedBuilder()
     .setTitle("ARK Players")
     .setColor(players.length ? Colors.Green : Colors.Grey)
-    .setDescription(players.length ? players.slice(0, 20).map((p) => `**${text(p.name)}** · ${text(p.map)} · lvl ${p.level ?? "?"}`).join("\n") : "No players online.")
+    .setDescription(players.length ? players.slice(0, 20).map((p) => `**${text(p.name)}** · ${text(p.map)} · lvl ${p.level ?? "?"}`).join("\n") : `No player rows returned. Source: ${text(value.source)}`)
     .setTimestamp(new Date());
 }
 
@@ -195,9 +196,25 @@ function adminPanel(runtime: Row, caps: Row): EmbedBuilder {
     .setTimestamp(new Date());
 }
 
-function slotField(name: string, value: unknown) {
-  const row = asRow(value);
-  return { name, value: row.name ? `${text(row.name)} · ${text(row.state)} · ${row.players ?? 0}/${row.maxPlayers ?? "?"}` : "empty", inline: false };
+function slotStateField(value: unknown) {
+  const slot = asRow(value);
+  const map = asRow(slot.map);
+  const name = slot.role === "Home" ? "Home" : "On-demand slot";
+  const body = map.name
+    ? `${text(map.name)} · ${text(map.state)} · ${playerLine(map)}`
+    : `${text(slot.mapKey, "unassigned")} · ${text(slot.systemd)} · players unavailable`;
+  return { name, value: body, inline: false };
+}
+
+function playerTotal(status: Row): string {
+  return status.players === null || status.players === undefined
+    ? text(status.playerCountSource, "unavailable")
+    : String(status.players);
+}
+
+function playerLine(row: Row): string {
+  const players = row.playerCountSource === "rcon" ? String(row.players ?? 0) : "players unavailable";
+  return `${players}/${row.maxPlayers ?? "max unknown"}`;
 }
 
 async function readState(path: string): Promise<DashboardState> {

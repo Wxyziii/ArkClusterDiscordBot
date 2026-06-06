@@ -28,19 +28,19 @@ export const commandData: RESTPostAPIChatInputApplicationCommandsJSONBody[] = [
   new SlashCommandBuilder()
     .setName("start")
     .setDescription("Admin: start slot")
-    .addStringOption((o) => o.setName("slot").setDescription("home/travel-a/travel-b").setRequired(true)),
+    .addStringOption((o) => o.setName("slot").setDescription("home or configured on-demand slot id").setRequired(true)),
   new SlashCommandBuilder()
     .setName("stop")
     .setDescription("Admin: stop slot")
-    .addStringOption((o) => o.setName("slot").setDescription("home/travel-a/travel-b").setRequired(true)),
+    .addStringOption((o) => o.setName("slot").setDescription("home or configured on-demand slot id").setRequired(true)),
   new SlashCommandBuilder()
     .setName("restart")
     .setDescription("Admin: restart slot")
-    .addStringOption((o) => o.setName("slot").setDescription("home/travel-a/travel-b").setRequired(true)),
+    .addStringOption((o) => o.setName("slot").setDescription("home or configured on-demand slot id").setRequired(true)),
   new SlashCommandBuilder()
     .setName("backup")
     .setDescription("Admin: backup slot")
-    .addStringOption((o) => o.setName("slot").setDescription("home/travel-a/travel-b").setRequired(true)),
+    .addStringOption((o) => o.setName("slot").setDescription("home or configured on-demand slot id").setRequired(true)),
   new SlashCommandBuilder()
     .setName("home")
     .setDescription("Admin: home controls")
@@ -175,7 +175,7 @@ function statusEmbed(status: Row): EmbedBuilder {
   return baseEmbed(`ARK Cluster · ${text(cluster.name, "Status")}`, Colors.Green)
     .setDescription(`Manager ${text(asRow(status.manager).status)} · Discord ${text(asRow(status.discord).status)} · Tailscale ${text(asRow(status.tailscale).status)}`)
     .addFields(
-      { name: "Players", value: String(status.players ?? 0), inline: true },
+      { name: "Players", value: playerTotal(status), inline: true },
       { name: "Running maps", value: String(status.runningMaps ?? 0), inline: true },
       { name: "RAM", value: `${text(pressure.label)} (${status.resourcePressure?.ramPct ?? "?"}%)`, inline: true },
       { name: "Travel policy", value: `${cluster.maxTravelServers ?? "?"} max · empty shutdown ${cluster.emptyShutdownMins ?? "?"} min`, inline: false }
@@ -183,14 +183,14 @@ function statusEmbed(status: Row): EmbedBuilder {
 }
 
 function mapsEmbed(maps: Row[]): EmbedBuilder {
-  const lines = maps.slice(0, 12).map((m) => `**${text(m.name)}** · ${text(m.assignment)} · ${text(m.state)} · ${m.players ?? 0}/${m.maxPlayers ?? "?"}`);
+  const lines = maps.slice(0, 12).map((m) => `**${text(m.name)}** · ${text(m.assignment)} · ${text(m.state)} · ${playerLine(m)}`);
   return baseEmbed("ARK Maps", Colors.Green).setDescription(lines.length ? lines.join("\n") : "No maps returned.");
 }
 
 function playersEmbed(value: Row): EmbedBuilder {
   const players = asRows(value.players);
   const lines = players.slice(0, 15).map((p) => `**${text(p.name)}** · ${text(p.map)} · lvl ${p.level ?? "?"} · ${p.connectedMins ?? 0}m`);
-  return baseEmbed("ARK Players", players.length ? Colors.Green : Colors.Grey).setDescription(lines.length ? lines.join("\n") : `No players online. Source: ${text(value.source)}`);
+  return baseEmbed("ARK Players", players.length ? Colors.Green : Colors.Grey).setDescription(lines.length ? lines.join("\n") : `No player rows returned. Source: ${text(value.source)}`);
 }
 
 function resourcesEmbed(value: Row): EmbedBuilder {
@@ -293,6 +293,17 @@ function asRows(value: unknown): Row[] {
 function text(value: unknown, fallback = "unknown"): string {
   if (value === null || value === undefined || value === "") return fallback;
   return String(value);
+}
+
+function playerTotal(status: Row): string {
+  return status.players === null || status.players === undefined
+    ? text(status.playerCountSource, "unavailable")
+    : String(status.players);
+}
+
+function playerLine(row: Row): string {
+  const players = row.playerCountSource === "rcon" ? String(row.players ?? 0) : "players unavailable";
+  return `${players}/${row.maxPlayers ?? "max unknown"}`;
 }
 
 function trunc(value: string, max: number): string {
