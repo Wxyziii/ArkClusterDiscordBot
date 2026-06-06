@@ -183,7 +183,7 @@ function statusEmbed(status: Row): EmbedBuilder {
 }
 
 function mapsEmbed(maps: Row[]): EmbedBuilder {
-  const lines = maps.slice(0, 12).map((m) => `**${text(m.name)}** · ${text(m.assignment)} · ${text(m.state)} · ${playerLine(m)}`);
+  const lines = maps.slice(0, 12).map((m) => `**${text(m.name)}** · ${mapAssignment(m)} · ${text(m.state)} · ${playerLine(m)}`);
   return baseEmbed("ARK Maps", Colors.Green).setDescription(lines.length ? lines.join("\n") : "No maps returned.");
 }
 
@@ -227,12 +227,13 @@ function runtimeField(name: string, value: unknown) {
 }
 
 function travelEmbed(value: Row): EmbedBuilder {
-  return baseEmbed(`Travel · ${text(value.requestedMap, "request")}`, value.accepted ? Colors.Green : Colors.Orange)
-    .setDescription(text(value.reason, "No reason returned."))
+  const titleMap = text(value.resolvedMapName ?? value.requestedMap, "request");
+  return baseEmbed(`Travel · ${titleMap}`, value.accepted ? Colors.Green : Colors.Orange)
+    .setDescription(text(value.userMessage ?? value.reason, "No reason returned."))
     .addFields(
       { name: "Status", value: text(value.status), inline: true },
-      { name: "Resolved map", value: text(value.resolvedMap, "none"), inline: true },
-      { name: "Chosen slot", value: text(value.chosenSlot, "none"), inline: true }
+      { name: "Requested map", value: text(value.requestedMap, "none"), inline: true },
+      { name: "Resolved map", value: text(value.resolvedMapName ?? value.resolvedMap, "none"), inline: true }
     );
 }
 
@@ -302,8 +303,16 @@ function playerTotal(status: Row): string {
 }
 
 function playerLine(row: Row): string {
-  const players = row.playerCountSource === "rcon" ? String(row.players ?? 0) : "players unavailable";
-  return `${players}/${row.maxPlayers ?? "max unknown"}`;
+  const max = row.maxPlayers ?? "capacity unknown";
+  if (row.playerCountSource === "rcon") return `${row.players ?? 0}/${max}`;
+  if (row.launchReady && ["Not running", "Offline"].includes(String(row.state))) return `0/${max}`;
+  const reason = text(row.unavailableReason ?? row.nextAction, "players unavailable");
+  return `players unavailable/${max} (${reason})`;
+}
+
+function mapAssignment(row: Row): string {
+  if (row.launchReady && !row.configured && row.assignment === "Unassigned") return "Available destination";
+  return text(row.assignment);
 }
 
 function trunc(value: string, max: number): string {
