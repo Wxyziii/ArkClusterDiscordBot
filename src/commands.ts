@@ -183,7 +183,7 @@ function statusEmbed(status: Row): EmbedBuilder {
 }
 
 function mapsEmbed(maps: Row[]): EmbedBuilder {
-  const lines = maps.slice(0, 12).map((m) => `**${text(m.name)}** · ${mapAssignment(m)} · ${text(m.state)} · ${playerLine(m)}`);
+  const lines = maps.slice(0, 12).map((m) => `**${text(m.name)}** · ${mapAssignment(m)} · ${text(m.state)} · ${playerLine(m)}${connectionLine(m)}`);
   return baseEmbed("ARK Maps", Colors.Green).setDescription(lines.length ? lines.join("\n") : "No maps returned.");
 }
 
@@ -228,13 +228,20 @@ function runtimeField(name: string, value: unknown) {
 
 function travelEmbed(value: Row): EmbedBuilder {
   const titleMap = text(value.resolvedMapName ?? value.requestedMap, "request");
-  return baseEmbed(`Travel · ${titleMap}`, value.accepted ? Colors.Green : Colors.Orange)
+  const embed = baseEmbed(`Travel · ${titleMap}`, value.accepted ? Colors.Green : Colors.Orange)
     .setDescription(text(value.userMessage ?? value.reason, "No reason returned."))
     .addFields(
       { name: "Status", value: text(value.status), inline: true },
       { name: "Requested map", value: text(value.requestedMap, "none"), inline: true },
       { name: "Resolved map", value: text(value.resolvedMapName ?? value.resolvedMap, "none"), inline: true }
     );
+  if (value.connectionAvailable) {
+    embed.addFields(
+      { name: "Game connect", value: text(value.connectionAddress), inline: true },
+      { name: "Steam favorites/query", value: text(value.queryAddress), inline: true }
+    );
+  }
+  return embed;
 }
 
 function configEmbed(value: Row, key: string | null): EmbedBuilder {
@@ -308,6 +315,13 @@ function playerLine(row: Row): string {
   if (["not_running", "stopped"].includes(String(row.playerCountSource))) return `0/${max}`;
   const reason = text(row.unavailableReason ?? row.nextAction, "players unavailable");
   return `players unavailable/${max} (${reason})`;
+}
+
+function connectionLine(row: Row): string {
+  if (!row.connectionAvailable) return "";
+  const state = String(row.state ?? "");
+  if (!["Online", "Ready", "Starting"].includes(state)) return "";
+  return ` · connect ${text(row.connectionAddress)} · query ${text(row.queryAddress)}`;
 }
 
 function mapAssignment(row: Row): string {

@@ -201,7 +201,7 @@ function slotStateField(value: unknown) {
   const map = asRow(slot.map);
   const name = slot.role === "Home" ? "Home" : "On-demand slot";
   const body = map.name
-    ? `${text(map.name)} · ${text(map.state)} · ${playerLine(map)}`
+    ? `${text(map.name)} · ${text(map.state)} · ${playerLine(map)}${connectionLine(map)}`
     : `${text(slot.mapKey, "unassigned")} · ${text(slot.systemd)} · players unavailable`;
   return { name, value: body, inline: false };
 }
@@ -218,6 +218,13 @@ function playerLine(row: Row): string {
   if (["not_running", "stopped"].includes(String(row.playerCountSource))) return `0/${max}`;
   const reason = text(row.unavailableReason ?? row.nextAction, "players unavailable");
   return `players unavailable/${max} (${reason})`;
+}
+
+function connectionLine(row: Row): string {
+  if (!row.connectionAvailable) return "";
+  const state = String(row.state ?? "");
+  if (!["Online", "Ready", "Starting"].includes(state)) return "";
+  return ` · connect ${text(row.connectionAddress)} · query ${text(row.queryAddress)}`;
 }
 
 async function readState(path: string): Promise<DashboardState> {
