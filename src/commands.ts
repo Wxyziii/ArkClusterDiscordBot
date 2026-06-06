@@ -305,7 +305,7 @@ function playerTotal(status: Row): string {
 function playerLine(row: Row): string {
   const max = row.maxPlayers ?? "capacity unknown";
   if (row.playerCountSource === "rcon") return `${row.players ?? 0}/${max}`;
-  if (row.launchReady && ["Not running", "Offline"].includes(String(row.state))) return `0/${max}`;
+  if (["not_running", "stopped"].includes(String(row.playerCountSource))) return `0/${max}`;
   const reason = text(row.unavailableReason ?? row.nextAction, "players unavailable");
   return `players unavailable/${max} (${reason})`;
 }
