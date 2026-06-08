@@ -329,9 +329,11 @@ function travelEmbed(value: Row): EmbedBuilder {
       { name: "Resolved map", value: text(value.resolvedMapName ?? value.resolvedMap, "none"), inline: true }
     );
   if (value.connectionAvailable) {
+    const connAddr = value.publicConnectionAddress ?? value.connectionAddress;
+    const queryAddr = value.publicQueryAddress ?? value.queryAddress;
     embed.addFields(
-      { name: "Game connect", value: text(value.connectionAddress), inline: true },
-      { name: "Steam favorites/query", value: text(value.queryAddress), inline: true }
+      { name: "Game connect", value: text(connAddr), inline: true },
+      { name: "Steam favorites/query", value: text(queryAddr), inline: true }
     );
   }
   return embed;
@@ -414,7 +416,9 @@ function connectionLine(row: Row): string {
   if (!row.connectionAvailable) return "";
   const state = String(row.state ?? "");
   if (!["Online", "Ready", "Starting"].includes(state)) return "";
-  return ` · connect ${text(row.connectionAddress)} · query ${text(row.queryAddress)}`;
+  const connAddr = row.publicConnectionAddress ?? row.connectionAddress;
+  const queryAddr = row.publicQueryAddress ?? row.queryAddress;
+  return ` · connect ${text(connAddr)} · query ${text(queryAddr)}`;
 }
 
 function mapAssignment(row: Row): string {
