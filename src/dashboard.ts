@@ -12,7 +12,7 @@ import { dirname } from "node:path";
 import type { BotConfig } from "./config.js";
 import { ManagerClient } from "./manager.js";
 
-type DashboardKey = "status" | "travel" | "players" | "logs" | "admin";
+type DashboardKey = "status" | "travel" | "nodes" | "players" | "logs" | "admin";
 type Row = Record<string, any>;
 type DashboardState = {
   guildId?: string;
@@ -25,6 +25,7 @@ type DashboardState = {
 const PANELS: Array<{ key: DashboardKey; name: string; topic: string }> = [
   { key: "status", name: "ark-status", topic: "ARK cluster status panel" },
   { key: "travel", name: "ark-travel", topic: "ARK travel slot panel" },
+  { key: "nodes", name: "ark-nodes", topic: "ARK external travel nodes" },
   { key: "players", name: "ark-players", topic: "ARK online players panel" },
   { key: "logs", name: "ark-logs", topic: "ARK recent manager events" },
   { key: "admin", name: "ark-admin", topic: "ARK admin/runtime panel" }
@@ -127,6 +128,7 @@ async function buildPanelEmbed(key: DashboardKey, manager: ManagerClient): Promi
   try {
     if (key === "status") return statusPanel(await manager.get<Row>("/api/status"));
     if (key === "travel") return travelPanel(await manager.get<Row>("/api/travel"));
+    if (key === "nodes") return nodesPanel(await manager.get<Row>("/api/nodes"), await manager.get<Row>("/api/travel/status"));
     if (key === "players") return playersPanel(await manager.get<Row>("/api/players"));
     if (key === "logs") return logsPanel(await manager.get<Row>("/api/activity"));
     return adminPanel(await manager.get<Row>("/api/runtime"), await manager.get<Row>("/api/capabilities"));
@@ -193,6 +195,44 @@ function adminPanel(runtime: Row, caps: Row): EmbedBuilder {
     .setTitle("ARK Admin")
     .setColor(runtime.ready ? Colors.Green : Colors.Orange)
     .setDescription([`Runtime: ${runtime.ready ? "ready" : "check"}`, ...capLines].join("\n"))
+    .setTimestamp(new Date());
+}
+
+function nodesPanel(nodesData: Row, travelData: Row): EmbedBuilder {
+  const nodes = asRows(nodesData.nodes);
+  const sessions = asRows(travelData.sessions);
+  if (!nodes.length) {
+    return new EmbedBuilder()
+      .setTitle("ARK Travel Nodes")
+      .setColor(Colors.Grey)
+      .setDescription("No nodes paired. Use `/node invite` to pair a Windows travel node.")
+      .setTimestamp(new Date());
+  }
+  const lines = nodes.map((n) => {
+    const icon = n.status === "online" ? "🟢" : n.status === "busy" ? "🟡" : n.status === "not_ready" ? "🟠" : "🔴";
+    const ram = n.available_ram_mb ? `${Math.round(n.available_ram_mb / 1024)}GB free` : "RAM?";
+    const session = sessions.find((s: Row) => s.node_id === n.id && !["closed", "error"].includes(String(s.status)));
+    const mapLine = session ? ` · **${text(session.map_name)}** ${text(session.status)}` : (n.current_map ? ` · ${text(n.current_map)}` : "");
+    const checks = [
+      n.cluster_share_mounted ? "share✓" : "share✗",
+      n.mods_valid ? "mods✓" : "mods✗",
+      n.config_valid ? "cfg✓" : "cfg✗"
+    ].join(" ");
+    return `${icon} **${text(n.display_name)}** · ${text(n.status)}${mapLine} · ${ram} · ${checks}`;
+  });
+  const sessionLines = sessions.length
+    ? sessions.map((s: Row) => {
+        const node = nodes.find((n) => n.id === s.node_id);
+        return `> ${text(s.map_name)} on ${node ? text(node.display_name) : text(s.node_id)} · ${text(s.status)}`;
+      })
+    : [];
+  const desc = [...lines, ...(sessionLines.length ? ["", "**Active sessions:**", ...sessionLines] : [])].join("\n");
+  const anyBusy = nodes.some((n) => n.status === "busy");
+  const anyOnline = nodes.some((n) => ["online", "busy"].includes(String(n.status)));
+  return new EmbedBuilder()
+    .setTitle("ARK Travel Nodes")
+    .setColor(anyBusy ? Colors.Yellow : anyOnline ? Colors.Green : Colors.Grey)
+    .setDescription(desc || "No data.")
     .setTimestamp(new Date());
 }
 

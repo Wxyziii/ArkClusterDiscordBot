@@ -81,6 +81,47 @@ export const commandData: RESTPostAPIChatInputApplicationCommandsJSONBody[] = [
         .setName("raw")
         .setDescription("Fetch raw endpoint")
         .addStringOption((o) => o.setName("endpoint").setDescription("/api/status, /api/servers, /health, ...").setRequired(true))
+    ),
+  new SlashCommandBuilder()
+    .setName("node")
+    .setDescription("Node management")
+    .addSubcommand((s) => s.setName("status").setDescription("Show all cluster nodes status"))
+    .addSubcommand((s) =>
+      s
+        .setName("invite")
+        .setDescription("Admin: create node pairing invite")
+        .addStringOption((o) => o.setName("name").setDescription("Node display name").setRequired(true))
+        .addIntegerOption((o) => o.setName("ttl").setDescription("Code TTL in minutes (default 15)"))
+    )
+    .addSubcommand((s) =>
+      s
+        .setName("revoke")
+        .setDescription("Admin: revoke a node token")
+        .addStringOption((o) => o.setName("node").setDescription("Node ID").setRequired(true))
+    )
+    .addSubcommand((s) =>
+      s
+        .setName("details")
+        .setDescription("Admin: full node diagnostics")
+        .addStringOption((o) => o.setName("node").setDescription("Node ID").setRequired(true))
+    ),
+  new SlashCommandBuilder()
+    .setName("travelnode")
+    .setDescription("Travel session management")
+    .addSubcommand((s) => s.setName("status").setDescription("Show active travel sessions"))
+    .addSubcommand((s) =>
+      s
+        .setName("close")
+        .setDescription("Admin: close a travel session (save → backup → stop)")
+        .addStringOption((o) => o.setName("node").setDescription("Node ID").setRequired(false))
+        .addStringOption((o) => o.setName("session").setDescription("Session ID").setRequired(false))
+    )
+    .addSubcommand((s) =>
+      s
+        .setName("forceclose")
+        .setDescription("Admin: force-close a travel session (no save)")
+        .addStringOption((o) => o.setName("node").setDescription("Node ID").setRequired(false))
+        .addStringOption((o) => o.setName("session").setDescription("Session ID").setRequired(false))
     )
 ].map((c) => c.toJSON());
 
@@ -96,7 +137,12 @@ export const handlers: Record<string, Handler> = {
     const map = i.options.getString("map", true);
     let value: unknown;
     try {
-      value = await m.post("/api/travel/request", { map, source: "discord", actor: i.user.tag });
+      value = await m.post("/api/travel/request", {
+        map,
+        source: "discord",
+        actor: i.user.tag,
+        actorDiscordId: i.user.id
+      });
     } catch (err) {
       if (!(err instanceof ManagerError) || !err.payload) throw err;
       value = err.payload;
@@ -149,6 +195,53 @@ export const handlers: Record<string, Handler> = {
     const endpoint = i.options.getString("endpoint", true).trim();
     if (!endpoint.startsWith("/api/") && endpoint !== "/health") throw new Error("endpoint must start with /api/ or be /health");
     await i.reply({ content: `\`\`\`json\n${compact(await m.get(endpoint), 1800)}\n\`\`\``, ephemeral: true });
+  },
+  node: async (i, m, c) => {
+    const sub = i.options.getSubcommand();
+    if (sub === "status") {
+      await replyEmbed(i, nodesEmbed(await m.get<Row>("/api/nodes")));
+      return;
+    }
+    requireAdmin(i, c);
+    if (sub === "invite") {
+      const name = i.options.getString("name", true);
+      const ttl = i.options.getInteger("ttl") ?? 15;
+      const value = await m.post<Row>("/api/nodes/pair/start", { name, createdBy: i.user.tag, ttlMins: ttl });
+      await replyEmbed(i, pairInviteEmbed(value));
+      return;
+    }
+    if (sub === "revoke") {
+      const nodeId = i.options.getString("node", true);
+      const value = await m.post<Row>(`/api/nodes/${nodeId}/revoke`, { confirm: true });
+      await replyEmbed(i, actionEmbed(value, `Revoke node ${nodeId}`));
+      return;
+    }
+    if (sub === "details") {
+      const nodeId = i.options.getString("node", true);
+      const value = await m.get<Row>(`/api/nodes/${nodeId}`);
+      await replyEmbed(i, nodeDetailEmbed(nodeId, value));
+      return;
+    }
+  },
+  travelnode: async (i, m, c) => {
+    const sub = i.options.getSubcommand();
+    if (sub === "status") {
+      await replyEmbed(i, travelSessionsEmbed(await m.get<Row>("/api/travel/status")));
+      return;
+    }
+    requireAdmin(i, c);
+    const nodeId = i.options.getString("node") ?? undefined;
+    const sessionId = i.options.getString("session") ?? undefined;
+    if (sub === "close") {
+      const value = await m.post<Row>("/api/travel/close", { nodeId, sessionId });
+      await replyEmbed(i, actionEmbed(value, "Travel close"));
+      return;
+    }
+    if (sub === "forceclose") {
+      const value = await m.post<Row>("/api/travel/force-close", { nodeId, sessionId, force: true });
+      await replyEmbed(i, actionEmbed(value, "Travel force-close"));
+      return;
+    }
   }
 };
 
@@ -327,6 +420,68 @@ function connectionLine(row: Row): string {
 function mapAssignment(row: Row): string {
   if (row.launchReady && !row.configured && row.assignment === "Unassigned") return "Available destination";
   return text(row.assignment);
+}
+
+function nodesEmbed(value: Row): EmbedBuilder {
+  const nodes = asRows(value.nodes);
+  if (!nodes.length) {
+    return baseEmbed("Cluster Nodes", Colors.Grey).setDescription("No nodes registered. Use `/node invite` to pair a node.");
+  }
+  const lines = nodes.map((n) => {
+    const statusIcon = n.status === "online" ? "🟢" : n.status === "busy" ? "🟡" : n.status === "not_ready" ? "🟠" : "🔴";
+    const ram = n.available_ram_mb ? `${Math.round(n.available_ram_mb / 1024)}GB free` : "RAM unknown";
+    const map = n.current_map ? ` · ${text(n.current_map)}` : "";
+    const share = n.cluster_share_mounted ? "share ✓" : "share ✗";
+    const mods = n.mods_valid ? "mods ✓" : "mods ✗";
+    return `${statusIcon} **${text(n.display_name)}** (\`${text(n.id)}\`) · ${text(n.status)}${map} · ${ram} · ${share} · ${mods}`;
+  });
+  return baseEmbed("Cluster Nodes", Colors.Blurple).setDescription(lines.join("\n"));
+}
+
+function pairInviteEmbed(value: Row): EmbedBuilder {
+  return baseEmbed("Node Pairing Invite", Colors.Green)
+    .setDescription(`Pairing code: \`${text(value.code)}\`\nExpires: ${text(value.expiresAt)}`)
+    .addFields(
+      { name: "Node name", value: text(value.suggestedName), inline: true },
+      { name: "TTL", value: `${text(value.ttlMins)} min`, inline: true },
+      { name: "Instructions", value: "Run `setup.ps1`, enter manager URL and this code.", inline: false }
+    );
+}
+
+function nodeDetailEmbed(nodeId: string, value: Row): EmbedBuilder {
+  const node = asRow(value.node);
+  const session = asRow(value.activeSession);
+  return baseEmbed(`Node: ${text(node.display_name, nodeId)}`, Colors.Blurple)
+    .addFields(
+      { name: "Status", value: text(node.status), inline: true },
+      { name: "Type", value: text(node.node_type), inline: true },
+      { name: "Tailscale IP", value: text(node.tailscale_ip, "unknown"), inline: true },
+      { name: "Version", value: text(node.version, "unknown"), inline: true },
+      { name: "RAM", value: node.available_ram_mb ? `${Math.round(node.available_ram_mb / 1024)}/${Math.round((node.total_ram_mb ?? 0) / 1024)} GB` : "unknown", inline: true },
+      { name: "Last heartbeat", value: text(node.last_heartbeat, "never"), inline: true },
+      { name: "Cluster share", value: node.cluster_share_mounted ? "mounted ✓" : "not mounted ✗", inline: true },
+      { name: "ARK installed", value: node.ark_server_installed ? "yes ✓" : "no ✗", inline: true },
+      { name: "Mods valid", value: node.mods_valid ? "yes ✓" : "no ✗", inline: true },
+      { name: "Config valid", value: node.config_valid ? "yes ✓" : "no ✗", inline: true },
+      { name: "Ports free", value: node.ports_free ? "yes ✓" : "no ✗", inline: true },
+      { name: "Last error", value: text(node.last_error, "none"), inline: false }
+    )
+    .addFields(session.id ? [{ name: "Active session", value: `${text(session.map_name)} · ${text(session.status)} · since ${text(session.started_at)}`, inline: false }] : []);
+}
+
+function travelSessionsEmbed(value: Row): EmbedBuilder {
+  const sessions = asRows(value.sessions);
+  const nodes = asRows(value.nodes);
+  if (!sessions.length) {
+    return baseEmbed("Travel Sessions", Colors.Grey).setDescription("No active travel sessions.");
+  }
+  const lines = sessions.map((s) => {
+    const node = nodes.find((n) => n.id === s.node_id);
+    const nodeName = node ? text(node.display_name) : text(s.node_id);
+    const statusIcon = s.status === "ready" ? "🟢" : s.status === "starting" ? "🟡" : s.status === "closing" ? "🟠" : "🔵";
+    return `${statusIcon} **${text(s.map_name)}** on **${nodeName}** · ${text(s.status)} · since ${text(s.started_at).slice(0, 16)}`;
+  });
+  return baseEmbed("Travel Sessions", Colors.Green).setDescription(lines.join("\n"));
 }
 
 function trunc(value: string, max: number): string {
